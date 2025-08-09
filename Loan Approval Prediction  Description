@@ -1,0 +1,181 @@
+#Task 3
+ #Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+from imblearn.over_sampling import SMOTE
+from sklearn.feature_selection import SelectKBest, f_classif
+file_path = '/content/loan_approval_dataset.csv'  # or your Google Drive path
+df = pd.read_csv(file_path)
+
+# Clean column names by stripping whitespace
+df.columns = df.columns.str.strip()
+
+# Data Exploration
+print("Dataset shape:", df.shape)
+print("\nFirst 5 rows:")
+print(df.head())
+print("\nData types and missing values:")
+print(df.info())
+print("\nSummary statistics:")
+print(df.describe())
+
+# Check for missing values
+print("\nMissing values per column:")
+print(df.isnull().sum())
+
+# Handle missing values and negative values
+df['residential_assets_value'] = df['residential_assets_value'].apply(lambda x: 0 if x < 0 else x)
+
+# Data Visualization
+plt.figure(figsize=(12, 6))
+sns.countplot(x='loan_status', data=df)
+plt.title('Loan Approval Distribution')
+plt.show()
+
+# Plot numerical features
+numerical_features = ['income_annum', 'loan_amount', 'loan_term', 'cibil_score', 
+                      'residential_assets_value', 'commercial_assets_value', 
+                      'luxury_assets_value', 'bank_asset_value']
+
+plt.figure(figsize=(15, 10))
+for i, feature in enumerate(numerical_features, 1):
+    plt.subplot(3, 3, i)
+    sns.histplot(df[feature], kde=True)
+    plt.title(f'Distribution of {feature}')
+plt.tight_layout()
+plt.show()
+
+# Plot categorical features
+categorical_features = ['education', 'self_employed']
+
+plt.figure(figsize=(12, 5))
+for i, feature in enumerate(categorical_features, 1):
+    plt.subplot(1, 2, i)
+    sns.countplot(x=feature, hue='loan_status', data=df)
+    plt.title(f'Loan Status by {feature}')
+plt.tight_layout()
+plt.show()
+
+# Feature Engineering
+# Encode categorical variables
+df['education'] = df['education'].map({'Graduate': 1, 'Not Graduate': 0})
+df['self_employed'] = df['self_employed'].map({'Yes': 1, 'No': 0})
+df['loan_status'] = df['loan_status'].map({'Approved': 1, 'Rejected': 0})
+
+# Calculate debt-to-income ratio
+df['debt_to_income'] = df['loan_amount'] / df['income_annum']
+
+# Calculate total assets
+df['total_assets'] = (df['residential_assets_value'] + 
+                      df['commercial_assets_value'] + 
+                      df['luxury_assets_value'] + 
+                      df['bank_asset_value'])
+
+# Calculate loan-to-asset ratio
+df['loan_to_asset'] = df['loan_amount'] / df['total_assets'].replace(0, 1)  # Avoid division by zero
+
+# Drop loan_id as it's not useful for prediction
+df = df.drop('loan_id', axis=1)
+
+# Feature Selection
+X = df.drop('loan_status', axis=1)
+y = df['loan_status']
+
+# Select top 10 features based on ANOVA F-value
+selector = SelectKBest(f_classif, k=10)
+X_selected = selector.fit_transform(X, y)
+
+# Get selected feature names
+selected_features = X.columns[selector.get_support()]
+print("\nSelected Features:")
+print(selected_features)
+
+# Update X with selected features
+X = X[selected_features]
+
+# Split data into train and test sets
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+
+# Handle class imbalance with SMOTE
+smote = SMOTE(random_state=42)
+X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
+
+# Scale numerical features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train_smote)
+X_test_scaled = scaler.transform(X_test)
+
+# Model 1: Random Forest Classifier
+rf = RandomForestClassifier(random_state=42)
+rf.fit(X_train_scaled, y_train_smote)
+y_pred_rf = rf.predict(X_test_scaled)
+
+# Evaluate Random Forest
+print("\nRandom Forest Classifier Performance:")
+print(classification_report(y_test, y_pred_rf))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_rf))
+
+# Feature Importance for Random Forest
+feature_importance = pd.DataFrame({
+    'Feature': selected_features,
+    'Importance': rf.feature_importances_
+}).sort_values('Importance', ascending=False)
+
+plt.figure(figsize=(10, 6))
+sns.barplot(x='Importance', y='Feature', data=feature_importance)
+plt.title('Random Forest Feature Importance')
+plt.show()
+
+# Model 2: Logistic Regression
+logreg = LogisticRegression(max_iter=1000, random_state=42)
+logreg.fit(X_train_scaled, y_train_smote)
+y_pred_lr = logreg.predict(X_test_scaled)
+
+# Evaluate Logistic Regression
+print("\nLogistic Regression Performance:")
+print(classification_report(y_test, y_pred_lr))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_lr))
+
+# Compare model performance
+models = {
+    'Random Forest': y_pred_rf,
+    'Logistic Regression': y_pred_lr
+}
+
+metrics = pd.DataFrame(columns=['Accuracy', 'Precision', 'Recall', 'F1'])
+
+for name, pred in models.items():
+    metrics.loc[name] = [
+        accuracy_score(y_test, pred),
+        precision_score(y_test, pred),
+        recall_score(y_test, pred),
+        f1_score(y_test, pred)
+    ]
+
+print("\nModel Comparison:")
+print(metrics)
+
+# Plot model comparison
+metrics.plot(kind='bar', figsize=(10, 6))
+plt.title('Model Performance Comparison')
+plt.ylabel('Score')
+plt.xticks(rotation=0)
+plt.ylim(0, 1)
+plt.show()
+
+# Save the best model (Random Forest in this case)
+import joblib
+joblib.dump(rf, 'loan_approval_rf_model.pkl')
+joblib.dump(scaler, 'loan_approval_scaler.pkl')
+joblib.dump(selector, 'loan_approval_selector.pkl')
+
+print("\nModel and preprocessing objects saved successfully!")
