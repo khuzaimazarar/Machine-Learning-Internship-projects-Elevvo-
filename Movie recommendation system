@@ -1,0 +1,161 @@
+#Task 4
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import TruncatedSVD
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+from scipy.sparse import csr_matrix
+
+# Mount Google Drive (if loading from Drive)
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Load the dataset
+# Download from: https://www.kaggle.com/datasets/trishna8/movielens-100k-dataset
+# Upload to Colab or your Drive
+movies = pd.read_csv('/content/drive/MyDrive/movies.csv')  # Update path
+ratings = pd.read_csv('/content/drive/MyDrive/ratings.csv')  # Update path
+
+# Data exploration
+print("Movies DataFrame:")
+print(movies.head())
+print("\nRatings DataFrame:")
+print(ratings.head())
+
+# Merge movies and ratings data
+movie_ratings = pd.merge(ratings, movies, on='movieId')
+print("\nMerged DataFrame:")
+print(movie_ratings.head())
+
+# Create user-item matrix
+user_item_matrix = movie_ratings.pivot_table(index='userId', columns='title', values='rating')
+print("\nUser-Item Matrix Shape:", user_item_matrix.shape)
+
+# Fill missing values with 0 (no rating)
+user_item_matrix = user_item_matrix.fillna(0)
+
+# Convert to sparse matrix for efficiency
+sparse_user_item = csr_matrix(user_item_matrix.values)
+
+# Perform SVD for dimensionality reduction
+n_components = 50  # Number of latent factors
+svd = TruncatedSVD(n_components=n_components, random_state=42)
+user_factors = svd.fit_transform(sparse_user_item)
+movie_factors = svd.components_.T
+
+print("\nExplained variance ratio:", svd.explained_variance_ratio_.sum())
+
+# Function to get similar movies based on cosine similarity
+def get_similar_movies(movie_title, movie_factors=movie_factors, user_item_matrix=user_item_matrix, k=10):
+    try:
+        # Get the index of the movie
+        movie_idx = list(user_item_matrix.columns).index(movie_title)
+        
+        # Get the movie vector
+        movie_vector = movie_factors[movie_idx]
+        
+        # Calculate cosine similarity with all movies
+        similarities = cosine_similarity([movie_vector], movie_factors)[0]
+        
+        # Get top k similar movies
+        similar_indices = similarities.argsort()[::-1][1:k+1]
+        similar_movies = [(user_item_matrix.columns[i], similarities[i]) for i in similar_indices]
+        
+        return similar_movies
+    except ValueError:
+        return "Movie not found in database"
+
+# Function to recommend movies for a user
+def recommend_movies(user_id, user_factors=user_factors, movie_factors=movie_factors, user_item_matrix=user_item_matrix, k=10):
+    try:
+        # Get user vector
+        user_vector = user_factors[user_id-1]  # user_id starts from 1
+        
+        # Predict ratings for all movies
+        predicted_ratings = np.dot(user_vector, movie_factors.T)
+        
+        # Get movies the user hasn't rated yet
+        rated_movies = user_item_matrix.loc[user_id]
+        unrated_mask = rated_movies == 0
+        unrated_movies = user_item_matrix.columns[unrated_mask]
+        unrated_indices = [list(user_item_matrix.columns).index(movie) for movie in unrated_movies]
+        
+        # Get top k recommendations from unrated movies
+        top_indices = predicted_ratings[unrated_indices].argsort()[::-1][:k]
+        recommendations = [(unrated_movies[i], predicted_ratings[unrated_indices][i]) for i in top_indices]
+        
+        return recommendations
+    except KeyError:
+        return "User not found in database"
+
+# Example usage
+print("\nMovies similar to 'Toy Story (1995)':")
+print(get_similar_movies('Toy Story (1995)'))
+
+print("\nRecommendations for user 1:")
+print(recommend_movies(1))
+
+# Evaluation
+# Split data into train and test
+train, test = train_test_split(ratings, test_size=0.2, random_state=42)
+
+# Create train and test matrices
+train_matrix = train.pivot_table(index='userId', columns='movieId', values='rating').fillna(0)
+test_matrix = test.pivot_table(index='userId', columns='movieId', values='rating').fillna(0)
+
+# Align test matrix with train matrix (some movies might not be in both)
+test_matrix = test_matrix.reindex(columns=train_matrix.columns, fill_value=0)
+
+# Convert to sparse matrices
+train_sparse = csr_matrix(train_matrix.values)
+test_sparse = csr_matrix(test_matrix.values)
+
+# Train SVD on training data
+svd_train = TruncatedSVD(n_components=50, random_state=42)
+user_factors_train = svd_train.fit_transform(train_sparse)
+movie_factors_train = svd_train.components_.T
+
+# Predict ratings on test set
+predicted_ratings = np.dot(user_factors_train, movie_factors_train.T)
+
+# Calculate RMSE
+y_true = test_sparse[test_sparse.nonzero()].toarray()[0]
+y_pred = predicted_ratings[test_sparse.nonzero()]
+rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+print("\nTest RMSE:", rmse)
+
+# Precision at K evaluation
+def precision_at_k(user_id, k=10):
+    # Get user's actual ratings from test set
+    actual_ratings = test[test['userId'] == user_id].sort_values('rating', ascending=False)
+    actual_top_k = actual_ratings.head(k)['movieId'].values
+    
+    # Get predicted recommendations
+    user_idx = user_id - 1  # assuming user_ids start at 1
+    predicted_ratings = np.dot(user_factors_train[user_idx], movie_factors_train.T)
+    
+    # Get movies not in training set for this user
+    train_rated = train[train['userId'] == user_id]['movieId'].values
+    mask = ~np.isin(train_matrix.columns, train_rated)
+    predicted_top_k = train_matrix.columns[mask][np.argsort(predicted_ratings[mask])[::-1][:k]]
+    
+    # Calculate precision
+    overlap = len(set(actual_top_k) & set(predicted_top_k))
+    return overlap / k
+
+# Calculate average precision at K for several users
+sample_users = test['userId'].unique()[:20]  # Use first 20 users for evaluation
+precisions = [precision_at_k(user) for user in sample_users]
+avg_precision = np.mean(precisions)
+print("\nAverage Precision@10:", avg_precision)
+
+# Visualization
+plt.figure(figsize=(10, 6))
+plt.plot(np.cumsum(svd_train.explained_variance_ratio_))
+plt.xlabel('Number of Components')
+plt.ylabel('Cumulative Explained Variance')
+plt.title('Explained Variance by SVD Components')
+plt.show()
